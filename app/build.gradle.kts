@@ -51,11 +51,12 @@ dependencies {
     implementation(libs.androidx.lifecycle.livedata.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.fragment.ktx)
+    implementation(libs.androidx.material3)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
-    implementation("com.amazonaws:ivs-broadcast:1.38.0")
+    implementation("com.amazonaws:ivs-broadcast:1.38.0:stages@aar")
 
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
     val cameraxVersion = "1.3.0" // O la más reciente
