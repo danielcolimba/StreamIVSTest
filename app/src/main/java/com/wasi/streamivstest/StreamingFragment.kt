@@ -3,9 +3,7 @@ package com.wasi.streamivstest
 import android.Manifest
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
-import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.Matrix
 import androidx.fragment.app.viewModels
 import android.os.Bundle
 import android.util.Log
@@ -22,23 +20,15 @@ import androidx.core.content.ContextCompat
 import com.wasi.streamivstest.databinding.FragmentStreamingBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-
-import kotlin.use
 
 class StreamingFragment : Fragment(), BroadcastListener {
 
-
-    // Variable temporal para el binding
     private var _binding: FragmentStreamingBinding? = null
-    // Esta propiedad es la que usaremos, solo es válida entre onCreateView y onDestroyView
     private val binding get() = _binding!!
     private val viewModel: StreamingViewModel by viewModels()
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var broadcastManager: BroadcastManager
-
-
+    private var ivsSurface: android.view.Surface? = null
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -71,38 +61,35 @@ class StreamingFragment : Fragment(), BroadcastListener {
 
         if (permissionsToRequest.isEmpty()) {
             startCamera()
-            setupBroadcastCamera()
         } else {
             requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         }
     }
 
+    /**
+     * Configura la cámara IVS para la transmisión
+     * IVS captura la cámara automáticamente, no necesitamos enviar frames manualmente
+     */
     private fun setupBroadcastCamera() {
         // Inicializar el BroadcastManager
         broadcastManager.initialize()
 
-        // Obtener la sesión y configurar la cámara de IVS
-        val session = broadcastManager.getSession() ?: return
+        // Obtener el Surface de IVS donde se deben renderizar los frames
+        ivsSurface = broadcastManager.setupDeviceCamera()
 
-        // Buscar dispositivo de cámara
-        val devices = session.listAttachedDevices()
-        val cameraDevice = devices.firstOrNull {
-            it is com.amazonaws.ivs.broadcast.ImageDevice &&
-            it.descriptor.type == com.amazonaws.ivs.broadcast.Device.Descriptor.DeviceType.CAMERA
-        } as? com.amazonaws.ivs.broadcast.ImageDevice
-
-        cameraDevice?.let { camera ->
-            // Adjuntar la cámara al mixer
-            session.mixer.bind(camera, "camera")
-            Log.d("StreamingFragment", "Cámara IVS configurada: ${camera.descriptor.friendlyName}")
+        if (ivsSurface != null) {
+            Log.d("StreamingFragment", "Surface de IVS obtenido correctamente")
+        } else {
+            Log.e("StreamingFragment", "No se pudo obtener el Surface de IVS")
+            Toast.makeText(requireContext(), "Error al configurar el streaming", Toast.LENGTH_SHORT).show()
         }
     }
-
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         cameraExecutor = Executors.newSingleThreadExecutor()
         broadcastManager = BroadcastManager(requireContext(), this)
+        setupBroadcastCamera()
     }
 
     override fun onCreateView(
@@ -124,45 +111,52 @@ class StreamingFragment : Fragment(), BroadcastListener {
                 broadcastManager.connect()
             }
         }
-
-        /*viewModel.broadcastState.observe(viewLifecycleOwner) { state ->
-            updateUI(state)
-        }
-
-        viewModel.errorMessage.observe(viewLifecycleOwner) { msg ->
-            Toast.makeText(requireContext(), "Error: $msg", Toast.LENGTH_LONG).show()
-        }*/
-
         checkPermissionsAndStart()
-
     }
 
+    /**
+     * Inicia CameraX para preview Y para enviar frames a IVS
+     */
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext())
 
         cameraProviderFuture.addListener({
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
+            // Preview para que el usuario vea la cámara en pantalla
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
             }
+
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-            val imageAnalysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST) // No satura la memoria
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // Formato compatible con Bitmaps
-                .build()
-
-            imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                // Aquí recibimos cada frame (ImageProxy)
-                //processFrameForIVS(imageProxy)
-            }
 
             try {
                 cameraProvider.unbindAll()
 
-                // Vincular a la cámara
-                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis)
+                // Si tenemos el Surface de IVS, crear un segundo Preview para renderizar en él
+                if (ivsSurface != null) {
+                    val ivsPreview = Preview.Builder().build()
+
+                    // Configurar el SurfaceProvider personalizado para usar el Surface de IVS
+                    ivsPreview.setSurfaceProvider { request ->
+                        val surface = ivsSurface
+                        if (surface != null) {
+                            request.provideSurface(surface, cameraExecutor) { result ->
+                                Log.d("CameraX", "Surface de IVS proporcionado: ${result.surface}")
+                            }
+                        } else {
+                            Log.e("CameraX", "Surface de IVS es null")
+                        }
+                    }
+
+                    // Vincular AMBOS previews: uno para pantalla, otro para IVS
+                    cameraProvider.bindToLifecycle(this, cameraSelector, preview, ivsPreview)
+                    Log.d("CameraX", "Cámara vinculada con preview local Y stream IVS")
+                } else {
+                    // Solo preview local si no hay Surface de IVS
+                    cameraProvider.bindToLifecycle(this, cameraSelector, preview)
+                    Log.w("CameraX", "Solo preview local - Surface de IVS no disponible")
+                }
 
             } catch (exc: Exception) {
                 Log.e("CameraX", "Error al iniciar la cámara", exc)
@@ -171,43 +165,22 @@ class StreamingFragment : Fragment(), BroadcastListener {
         }, ContextCompat.getMainExecutor(requireContext()))
     }
 
-    private fun processFrameForIVS(imageProxy: ImageProxy) {
-        imageProxy.use { proxy ->
-            val rawBitmap = proxy.toBitmap() ?: return@use
-            val rotatedBitmap = if (proxy.imageInfo.rotationDegrees != 0) {
-                rotateBitmap(rawBitmap, proxy.imageInfo.rotationDegrees.toFloat())
-            } else {
-                rawBitmap
-            }
-            val finalBitmap = Bitmap.createScaledBitmap(rotatedBitmap, 720, 1280, true)
-
-            //viewModel.processBitmap(finalBitmap)
-        }
-    }
-
-
-    private fun rotateBitmap(source: Bitmap, angle: Float): Bitmap {
-        val matrix = Matrix()
-        matrix.postRotate(angle)
-        return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
-    }
-
     private fun updateUI(state: BroadcastState) {
         when (state) {
             BroadcastState.DISCONNECTED, BroadcastState.ERROR -> {
                 binding.btnBroadcast.text = "INICIAR TRANSMISIÓN"
-                binding.btnBroadcast.backgroundTintList = ColorStateList.valueOf(Color.BLUE) // O tu color primario
+                binding.btnBroadcast.backgroundTintList = ColorStateList.valueOf(Color.BLUE)
                 binding.btnBroadcast.isEnabled = true
                 binding.progressBar.visibility = View.GONE
             }
             BroadcastState.CONNECTING -> {
                 binding.btnBroadcast.text = "CONECTANDO..."
-                binding.btnBroadcast.isEnabled = false // Evitar doble click
+                binding.btnBroadcast.isEnabled = false
                 binding.progressBar.visibility = View.VISIBLE
             }
             BroadcastState.CONNECTED -> {
                 binding.btnBroadcast.text = "DETENER TRANSMISIÓN"
-                binding.btnBroadcast.backgroundTintList = ColorStateList.valueOf(Color.RED) // Rojo para indicar EN VIVO
+                binding.btnBroadcast.backgroundTintList = ColorStateList.valueOf(Color.RED)
                 binding.btnBroadcast.isEnabled = true
                 binding.progressBar.visibility = View.GONE
             }
@@ -217,6 +190,7 @@ class StreamingFragment : Fragment(), BroadcastListener {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        ivsSurface = null
         broadcastManager.release()
         cameraExecutor.shutdown()
         _binding = null

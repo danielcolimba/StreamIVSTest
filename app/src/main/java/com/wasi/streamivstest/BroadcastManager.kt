@@ -7,7 +7,7 @@ import com.amazonaws.ivs.broadcast.*
 enum class BroadcastState {
     DISCONNECTED,
     CONNECTING,
-    CONNECTED, // EN VIVO
+    CONNECTED,
     RECONNECTING,
     ERROR
 }
@@ -25,10 +25,12 @@ class BroadcastManager(
 
     private var broadcastSession: BroadcastSession? = null
     private var currentState: BroadcastState = BroadcastState.DISCONNECTED
+    private var customImageSource: SurfaceSource? = null
 
     // Credenciales y configuración
     private var streamUrl: String = ""
     private var streamKey: String = ""
+    private val SLOT_CAMERA_NAME = "camera-wasi"
 
     /**
      * Establece las credenciales del servidor IVS
@@ -69,7 +71,7 @@ class BroadcastManager(
                 // Configuración de mixer (mezcla de video/audio)
                 mixer.slots = arrayOf(
                     BroadcastConfiguration.Mixer.Slot.with { slot ->
-                        slot.name = "camera"
+                        slot.name = SLOT_CAMERA_NAME
                         slot.aspect = BroadcastConfiguration.AspectMode.FIT
                         slot.size = videoConfig
                         slot.position = BroadcastConfiguration.Vec2(0f, 0f)
@@ -158,6 +160,54 @@ class BroadcastManager(
      * Verifica si está transmitiendo
      */
     fun isStreaming(): Boolean = currentState == BroadcastState.CONNECTED
+
+    /**
+     * Configura la fuente de video para transmitir
+     * Retorna el Surface donde CameraX debe renderizar los frames
+     * @return Surface si se configuró correctamente, null si hubo error
+     */
+    fun setupDeviceCamera(): android.view.Surface? {
+        try {
+            val session = broadcastSession ?: run {
+                Log.e(TAG, "BroadcastSession no está inicializado")
+                return null
+            }
+
+            // Crear CustomImageSource - esto crea una fuente de video personalizada
+            customImageSource = session.createImageInputSource()
+
+            if (customImageSource != null) {
+                // Obtener el Surface donde se deben renderizar los frames de la cámara
+                val surface = customImageSource?.inputSurface
+
+                if (surface != null) {
+                    // Hacer bind del CustomImageSource al mixer
+                    session.mixer.bind(customImageSource, SLOT_CAMERA_NAME)
+                    Log.d(TAG, "CustomImageSource creado y enlazado. Surface disponible para CameraX")
+
+                    // Retornar el Surface para que CameraX renderice en él
+                    return surface
+                } else {
+                    Log.e(TAG, "No se pudo obtener el Surface del CustomImageSource")
+                    return null
+                }
+            } else {
+                Log.e(TAG, "No se pudo crear CustomImageSource")
+                return null
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error al configurar la cámara: ${e.message}", e)
+            listener.onError("Error al configurar cámara: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * Obtiene el Surface para renderizar frames de CameraX
+     * Útil si ya se configuró previamente
+     */
+    fun getInputSurface(): android.view.Surface? = customImageSource?.inputSurface
 
     /**
      * Crea el listener para eventos de broadcast
