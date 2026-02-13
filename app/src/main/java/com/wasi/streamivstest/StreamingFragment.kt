@@ -25,7 +25,6 @@ class StreamingFragment : Fragment(), BroadcastListener {
 
     private var _binding: FragmentStreamingBinding? = null
     private val binding get() = _binding!!
-    private val viewModel: StreamingViewModel by viewModels()
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var broadcastManager: BroadcastManager
     private var ivsSurface: android.view.Surface? = null
@@ -68,7 +67,6 @@ class StreamingFragment : Fragment(), BroadcastListener {
 
     /**
      * Configura la cámara IVS para la transmisión
-     * IVS captura la cámara automáticamente, no necesitamos enviar frames manualmente
      */
     private fun setupBroadcastCamera() {
         // Inicializar el BroadcastManager
@@ -124,9 +122,12 @@ class StreamingFragment : Fragment(), BroadcastListener {
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
             // Preview para que el usuario vea la cámara en pantalla
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
-            }
+            val preview = Preview.Builder()
+                .setTargetRotation(binding.viewFinder.display.rotation) // Usar rotación de la pantalla
+                .build()
+                .also {
+                    it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
+                }
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
@@ -135,7 +136,8 @@ class StreamingFragment : Fragment(), BroadcastListener {
 
                 // Si tenemos el Surface de IVS, crear un segundo Preview para renderizar en él
                 if (ivsSurface != null) {
-                    val ivsPreview = Preview.Builder().build()
+                    val ivsPreview = Preview.Builder()
+                        .build()
 
                     // Configurar el SurfaceProvider personalizado para usar el Surface de IVS
                     ivsPreview.setSurfaceProvider { request ->

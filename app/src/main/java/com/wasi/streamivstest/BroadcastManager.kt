@@ -36,6 +36,7 @@ class BroadcastManager(
      * Establece las credenciales del servidor IVS
      * @param url URL del servidor RTMPS (ejemplo: rtmps://xxxxx.global-contribute.live-video.net:443/app/)
      * @param key Stream key proporcionada por AWS IVS
+     *
      */
     fun setCredentials(url: String, key: String) {
         this.streamUrl = url
@@ -48,7 +49,9 @@ class BroadcastManager(
      */
     fun initialize() {
         try {
-            // Configuración de video básica para móvil (720p, 30fps)
+            // Configuración de video para móvil
+            // Usamos 1280x720 (landscape) porque el sensor captura en landscape
+            // La rotación se manejará con transformación de CameraX
             val videoConfig = BroadcastConfiguration.Vec2(1280f, 720f)
             val videoFps = 30
             val videoBitrate = 2500000 // 2.5 Mbps
@@ -73,7 +76,8 @@ class BroadcastManager(
                     BroadcastConfiguration.Mixer.Slot.with { slot ->
                         slot.name = SLOT_CAMERA_NAME
                         slot.aspect = BroadcastConfiguration.AspectMode.FIT
-                        slot.size = videoConfig
+                        // Mismo tamaño que el video: 1280x720 (landscape)
+                        slot.size = BroadcastConfiguration.Vec2(1280f, 720f)
                         slot.position = BroadcastConfiguration.Vec2(0f, 0f)
                         slot
                     }
@@ -162,18 +166,19 @@ class BroadcastManager(
     fun isStreaming(): Boolean = currentState == BroadcastState.CONNECTED
 
     /**
-     * Configura la fuente de video para transmitir
+     * Configura la fuente de video para transmitir con rotación
      * Retorna el Surface donde CameraX debe renderizar los frames
+     * @param rotationDegrees Rotación a aplicar (0, 90, 180, 270) - se maneja desde CameraX
      * @return Surface si se configuró correctamente, null si hubo error
      */
-    fun setupDeviceCamera(): android.view.Surface? {
+    fun setupDeviceCamera(rotationDegrees: Int = 90): android.view.Surface? {
         try {
             val session = broadcastSession ?: run {
                 Log.e(TAG, "BroadcastSession no está inicializado")
                 return null
             }
 
-            // Crear CustomImageSource - esto crea una fuente de video personalizada
+            // Crear CustomImageSource sin parámetros - la rotación se maneja desde CameraX
             customImageSource = session.createImageInputSource()
 
             if (customImageSource != null) {
@@ -183,7 +188,7 @@ class BroadcastManager(
                 if (surface != null) {
                     // Hacer bind del CustomImageSource al mixer
                     session.mixer.bind(customImageSource, SLOT_CAMERA_NAME)
-                    Log.d(TAG, "CustomImageSource creado y enlazado. Surface disponible para CameraX")
+                    Log.d(TAG, "CustomImageSource creado. Rotación ${rotationDegrees}° manejada por CameraX")
 
                     // Retornar el Surface para que CameraX renderice en él
                     return surface
@@ -202,12 +207,6 @@ class BroadcastManager(
             return null
         }
     }
-
-    /**
-     * Obtiene el Surface para renderizar frames de CameraX
-     * Útil si ya se configuró previamente
-     */
-    fun getInputSurface(): android.view.Surface? = customImageSource?.inputSurface
 
     /**
      * Crea el listener para eventos de broadcast
